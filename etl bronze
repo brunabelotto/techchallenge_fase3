@@ -1,0 +1,41 @@
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.dynamicframe import DynamicFrame
+from awsglue.job import Job
+
+sc = SparkContext.getOrCreate()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init("job_camada_bronze_notebook", {})
+output_path = "s3://tech-challenge-data-fase3/camada bronze/"
+base_input = "s3://tech-challenge-data-fase3/input/"
+# 1. Leitura individual forçando o reconhecimento do cabeçalho (header="true")
+# Garanta que os nomes dos arquivos estão de acordo com o código abaixo
+df_2023 = spark.read.option("header", "true").option("delimiter", ",").csv(base_input + "State_of_Data_2023.csv")
+df_2024 = spark.read.option("header", "true").option("delimiter", ",").csv(base_input + "State_of_Data_2024.csv")
+df_2025 = spark.read.option("header", "true").option("delimiter", ",").csv(base_input + "State_of_Data_2025.csv")
+
+# 2. Empilhar os dados garantindo o alinhamento pelo nome original da coluna
+df_bronze = df_2023.unionByName(df_2024, allowMissingColumns=True) \
+                   .unionByName(df_2025, allowMissingColumns=True)
+# 3. Conversão e gravação
+dyf_bronze = DynamicFrame.fromDF(df_bronze, glueContext, "dyf_bronze")
+
+s3output = glueContext.getSink(
+    path=output_path,
+    connection_type="s3",
+    updateBehavior="UPDATE_IN_DATABASE",
+    partitionKeys=[],
+    compression="snappy",
+    enableUpdateCatalog=True,
+    transformation_ctx="s3output",
+)
+s3output.setCatalogInfo(
+    catalogDatabase="default", 
+    catalogTableName="state_of_data_bronze"
+)
+s3output.setFormat("glueparquet")
+s3output.writeFrame(dyf_bronze)
+
+job.commit()
