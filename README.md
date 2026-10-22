@@ -1,4 +1,5 @@
 # techchallenge_fase3
+dados: https://www.kaggle.com/datahackers/datasets
 Criar pasta no S3 chamada input
 
 Criar pasta no S3 chamada bronze
