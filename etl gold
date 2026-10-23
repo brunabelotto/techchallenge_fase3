@@ -1,0 +1,87 @@
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.dynamicframe import DynamicFrame
+from awsglue.job import Job
+from pyspark.sql.functions import coalesce, col
+
+sc = SparkContext.getOrCreate()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init("job_camada_gold_notebook", {})
+
+input_silver = "s3://tech-challenge-513798489471/silver/"
+output_gold = "s3://tech-challenge-513798489471/gold/"
+
+# Lê os dados conformados da camada Silver
+df_silver = spark.read.parquet(input_silver)
+
+from pyspark.sql.functions import coalesce, col, year, to_timestamp
+
+df_gold = df_silver.select(
+    # ==========================================
+    # Q1 & Q3: Distribuição por cargo, formação, experiência e participação
+    # ==========================================
+    coalesce(col("p2_f_cargo_atual_34"), col("2_f_cargo_atual")).alias("cargo_atual"),
+    coalesce(col("p2_g_nivel_35"), col("2_g_nivel")).alias("nivel_senioridade"),
+    coalesce(col("p1_l_nivel_de_ensino_27"), col("1_l_nivel_de_ensino")).alias("nivel_ensino"),
+    coalesce(col("p1_m_rea_de_forma_o_28"), col("1_m_rea_de_forma_o")).alias("area_formacao"),
+    coalesce(col("p2_i_quanto_tempo_de_experi_ncia_na_rea_de_dados_voc_tem_37"), col("2_i_tempo_de_experiencia_em_dados")).alias("tempo_experiencia_dados"),
+    coalesce(col("p1_b_genero_3"), col("1_b_genero")).alias("genero"),
+    coalesce(col("p1_c_cor_raca_etnia_4"), col("1_c_cor_raca_etnia")).alias("raca_etnia"),
+
+    # ==========================================
+    # Q2: Perfis com maior concentração nas faixas salariais superiores
+    # ==========================================
+    coalesce(col("p2_h_faixa_salarial_36"), col("2_h_faixa_salarial")).alias("faixa_salarial"),
+
+    # ==========================================
+    # Q6: Relação entre região e modelos de trabalho
+    # ==========================================
+    coalesce(col("p1_i_2_regiao_onde_mora_24"), col("1_i_2_regiao_onde_mora")).alias("regiao"),
+    coalesce(col("p1_i_1_uf_onde_mora_23"), col("1_i_1_uf_onde_mora")).alias("uf"),
+    coalesce(col("p2_r_atualmente_qual_a_sua_forma_de_trabalho_62"), col("2_r_modelo_de_trabalho_atual"), col("2_q_modelo_de_trabalho_atual")).alias("modelo_trabalho_atual"),
+    coalesce(col("p2_s_qual_a_forma_de_trabalho_ideal_para_voc_63"), col("2_s_modelo_de_trabalho_ideal"), col("2_r_modelo_de_trabalho_ideal")).alias("modelo_trabalho_ideal"),
+
+    # ==========================================
+    # Q4: Ferramentas mais utilizadas (Para visualizar a evolução)
+    # ==========================================
+    coalesce(col("p4_e_entre_as_linguagens_listadas_abaixo_qual_a_que_voc_mais_utiliza_no_trabalho_159"), col("4_e_linguagem_mais_usada")).alias("linguagem_mais_usada"),
+    coalesce(col("p4_k_qual_sua_ferramenta_de_bi_preferida_228"), col("4_k_ferramenta_de_bi_preferida"), col("4_h_ferramenta_de_bi_preferida")).alias("bi_preferido"),
+    coalesce(col("p4_i_cloud_preferida_203"), col("4_i_cloud_preferida"), col("4_f_cloud_preferida")).alias("cloud_preferida"),
+
+    # ==========================================
+    # Q5: Adoção de IA e impactos
+    # ==========================================
+    coalesce(col("p3_e_ai_generativa_uma_prioridade_em_sua_empresa_103"), col("3_e_ai_generativa_e_llm_uma_prioridade")).alias("ia_prioridade_empresa"),
+    coalesce(col("p4_m_utiliza_chatgpt_ou_llms_no_trabalho_238"), col("4_m_usa_chatgpt_ou_copilot_no_trabalho"), col("4_j_usa_chatgpt_ou_copilot_no_trabalho")).alias("uso_ia_trabalho"),
+    
+    # ==========================================
+    # EVOLUÇÃO TEMPORAL (Essencial para a pergunta 4)
+    # ==========================================
+    # Captura a data de envio do formulário para permitir cruzar todas as métricas acima pelo ano da pesquisa
+    coalesce(col("0_d_data_hora_envio")).alias("data_pesquisa")
+)
+
+# Salva a tabela final na camada Gold
+dyf_gold = DynamicFrame.fromDF(df_gold, glueContext, "dyf_gold")
+
+s3output_gold = glueContext.getSink(
+    path=output_gold,
+    connection_type="s3",
+    updateBehavior="UPDATE_IN_DATABASE",
+    partitionKeys=[],
+    compression="snappy",
+    enableUpdateCatalog=True,
+    transformation_ctx="s3output_gold",
+)
+
+s3output_gold.setCatalogInfo(
+    catalogDatabase="default", 
+    catalogTableName="state_of_data_gold"
+)
+
+s3output_gold.setFormat("glueparquet")
+s3output_gold.writeFrame(dyf_gold)
+
+job.commit()
