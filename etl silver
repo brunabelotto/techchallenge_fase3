@@ -1,0 +1,72 @@
+import re
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.dynamicframe import DynamicFrame
+from awsglue.job import Job
+
+# 1. Inicialização do Job
+sc = SparkContext.getOrCreate()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init("job_camada_silver_notebook", {})
+
+# 2. Definição dos caminhos
+input_bronze = "s3://tech-challenge-data-fase3/camada bronze/"
+output_silver = "s3://tech-challenge-data-fase3/camada gold/"
+
+# 3. Leitura direta do Parquet na camada Bronze
+df_silver_raw = spark.read.parquet(input_bronze)
+
+# 4. PADRONIZAÇÃO DO NOME DAS COLUNAS (Fazer PRIMEIRO)
+# ==========================================
+def limpar_nome_coluna(nome):
+    if not nome: 
+        return "coluna_vazia"
+    
+    nome_limpo = str(nome).lower()
+    nome_limpo = re.sub(r'[^a-z0-9]', '_', nome_limpo)
+    nome_limpo = re.sub(r'_+', '_', nome_limpo)
+    return nome_limpo.strip('_')
+
+colunas_originais = df_silver_raw.columns
+novos_nomes = []
+
+for c in colunas_originais:
+    nome_limpo = limpar_nome_coluna(c)
+    if nome_limpo in novos_nomes:
+        contador = 1
+        while f"{nome_limpo}_{contador}" in novos_nomes:
+            contador += 1
+        novos_nomes.append(f"{nome_limpo}_{contador}")
+    else:
+        novos_nomes.append(nome_limpo)
+# Renomeia todas as colunas ANTES das transformações de linhas
+df_silver_renomeado = df_silver_raw.toDF(*novos_nomes)
+# 5. LIMPEZA DE DADOS (Agora o Spark roda sem quebrar a sintaxe)
+# ==========================================
+df_silver_limpo = df_silver_renomeado.dropna(how='all')
+df_silver_final = df_silver_limpo.dropDuplicates()
+# 6. GRAVAÇÃO NO CATALOG (Athena)
+# ==========================================
+dyf_silver = DynamicFrame.fromDF(df_silver_final, glueContext, "dyf_silver")
+
+s3output_silver = glueContext.getSink(
+    path=output_silver,
+    connection_type="s3",
+    updateBehavior="UPDATE_IN_DATABASE",
+    partitionKeys=[],
+    compression="snappy",
+    enableUpdateCatalog=True,
+    transformation_ctx="s3output_silver",
+)
+
+s3output_silver.setCatalogInfo(
+    catalogDatabase="default", 
+    catalogTableName="state_of_data_silver"
+)
+
+s3output_silver.setFormat("glueparquet")
+s3output_silver.writeFrame(dyf_silver)
+
+job.commit()
